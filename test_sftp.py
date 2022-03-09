@@ -1,5 +1,5 @@
 import pysftp
-#testing sftp conection with chanin
+#testing sftp conection with chanin server
 myHostname = "10.0.0.48"
 myUsername = "root"
 remoteFilePath = "/root/MIAU_devlpmt/pyServices/amb.py"
