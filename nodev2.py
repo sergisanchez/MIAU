@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3.8
 # Node program
 
 # Definition of the program
@@ -16,13 +16,11 @@
 '''
 
 #### Imports
-import os, argparse
+import os, argparse, subprocess
 import threading
 from time import sleep
 import requests
-
-
-import RTM as rtm
+import RTMv2 as rtm
 from common import custom_print
 cstp = custom_print(True,'[node.py] ')
 
@@ -32,6 +30,7 @@ def nop():
 #### PID
 print('PID: ' + str(os.getpid()))
 
+######
 #### Global Variables
 connected = True
 thread_RTM = None
@@ -50,14 +49,14 @@ node_info={
     'IoT':'None'
 }
 
-
 ###############################################
 #                   Threads
 ###############################################
 
 def th_RTM(node_info):
+
     node_info=rtm.setup(node_info, verbose=True, ip_cbk=ipValue)
-    node_info['myIP']=rtm.getmyIP()
+    node_info['myIP']=rtm.getmyIP(node_info)
     connected=rtm.start(node_info)
 
     while connected:
@@ -66,13 +65,14 @@ def th_RTM(node_info):
     rtm.stop()
 
 
-def th_ui():
+def th_ui(pid):
     global connected
     while connected:
         msg = input('->')
         if str(msg).lower() == 'exit':
             connected = False
-
+            pid.kill()
+            print("hug ", pid.pid," closed")
 
 ###############################################
 #                   Functions
@@ -82,9 +82,6 @@ def threadingSetup(node_info):
 
     thread_RTM = threading.Thread(target=th_RTM,args=(node_info,), daemon=True)
     thread_RTM.start()
-
-
-
 def threadingJoining():
     thread_RTM.join()
 
@@ -109,42 +106,12 @@ def ipValue(write=False, key='', value=''):
             return {key:IP[key]}
 
 
-def identificationProccess(node_info):
+def identificationProccess():
     import random
-    nodeID = str(random.randint(0,100000000))
-    """#method to obtain a key from cloud
-    import obtain_key as registration
-    cpath = os.path.join(os.path.abspath(os.path.curdir), _file_name)
-    if not os.path.isfile(cpath):
-        print("The node don't have an ID")
-
-        # TODO: Registration process here!
-        registration.init_connection()
-        print("Agent type:",node_info['role'])
-        node_id, user_key=registration.send2cloud(args.d)
-        _nodeID = (user_key,str(node_id))
-        print("New nodeID:",_nodeID)
-        registration.close_connection()
-        
-        try:
-            file = open(cpath, 'w')
-            file.write(str(_nodeID))
-            file.close()
-        except Exception as ex:
-            cstp.eprint('Error while creating Id file. Exiting...')
-            cstp.eprint(ex)
-            exit(-1)
-    else:
-        print("The node has an ID, we  recover")
-        try:
-            file = open(cpath, 'r')
-            #_nodeID = eval(file.read())
-            _nodeID = file.read()
-            file.close()
-        except FileNotFoundError:
-            cstp.eprint('Error while opening Id file. Exiting...')
-            exit(-1)"""
+    nodeID = str(random.randint(0, 100000000))
     return nodeID
+
+
 ###############################################
 #                   AGENT in Thread
 ###############################################
@@ -154,7 +121,7 @@ def identificationProccess(node_info):
 parser.add_argument('d', metavar='device', default='NONE', help='device: CAR/SEM/AMB/BOM/BUI_F/BUI_I/BUI_J')
 parser.add_argument('role', choices={'LEADER': 'LEADER', 'AGENT': 'AGENT'}, help='which role to take')
 parser.add_argument('-g', metavar='gpio', type=bool, default=False, help='GPIO enabled')
-parser.add_argument('BcastIP', help='interface the receiver listens at;nettwork the transmitter sends to')
+parser.add_argument('-B', metavar='BcastIP',default=None,help='interface the receiver listens at;nettwork the transmitter sends to')
 parser.add_argument('-portUDP', metavar='portUDP',default='None',help='Port UDP')
 parser.add_argument('-portTCP', metavar='portTCP',default='None',help='Port TCP in case of 2 leaders')
 parser.add_argument('-v', metavar='verbose', type=bool, default=False, help='Make the output verbose')
@@ -162,22 +129,64 @@ parser.add_argument('-v', metavar='verbose', type=bool, default=False, help='Mak
 args = parser.parse_args()
 node_info['device']=args.d
 node_info['role']=args.role
-node_info['BcastIP']=args.BcastIP
+node_info['BcastIP']=args.B
 node_info['portUDP']=args.portUDP
 node_info['portTCP']=args.portTCP
+node_info=rtm.IoTset(node_info)
 
-#### TODO:Provisional: elimina el fichero de nodeID del Agent cada vez que se inicializa
-if os.path.exists(_file_name):
-    os.remove(_file_name)
+
 ############################################
-# Reset globalDB by the LEADER
+
+
 if node_info['role']== 'LEADER':
-    requests.get('http://147.83.159.220:8000/reset_topoDB')
-node_info['node_ID']=identificationProccess(node_info)
+    if node_info['BcastIP'] == None:
+        node_info['BcastIP']=rtm.get_bcastaddr()
+    node_info['myIP']=rtm.getmyIP(node_info)
+    node_info['leaderIP']=node_info['myIP']
+    # starting API REST
+
+    API_addr_get = 'http://' + node_info['myIP'] + ':8000/get_topoDB'
+    try:
+        requests.get(API_addr_get)
+        print("API is Running")
+
+    except Exception as ex:
+        print("*********** Start API ******")
+        pid=subprocess.Popen(["hug", "-f", "API_node.py","&"], stdout=True)
+        # Reset globalDB by the LEADER
+        sleep(5)
+        API_addr_reset = 'http://' + node_info['myIP'] + ':8000/reset_topoDB'
+        # requests.get('http://147.83.159.220:8000/reset_topoDB')
+        requests.get(API_addr_reset)
+        # Register info LEADER in globalDB
+
+        API_addr_update = 'http://' + node_info['myIP'] + ':8000/update_topoDB'
+        response = (requests.post(API_addr_update, data=node_info))
+
+
+elif node_info['role']== 'AGENT':
+    if node_info['BcastIP'] == None:
+        node_info['BcastIP']=rtm.get_bcastaddr()
+    node_info['myIP']=rtm.getmyIP(node_info)
+    node_info['BcastIP']=""
+    # starting API REST in AGENT
+
+    API_addr_get = 'http://' + node_info['myIP'] + ':8000/get_topoDB'
+    try:
+        requests.get(API_addr_get)
+        print("API is Running")
+
+    except Exception as ex:
+        print("*********** Start API ******")
+        pid=subprocess.Popen(["hug", "-f", "API_node.py","&"], stdout=True)
+
+
+
+node_info['node_ID']=identificationProccess()
+
 threadingSetup(node_info)
 sleep(2)
 
 if True: # TODO: Args ui activate
-    th_ui()
+    th_ui(pid)
 
-# threadingJoining()

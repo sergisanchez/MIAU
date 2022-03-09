@@ -29,13 +29,13 @@ topoFile='topoDBfile' # Topology Data Base
 localDBfile='LocalDB'
 ipLEADER2=0 # initialazing to localhost to test
 flag='LEADER2'
-porTCP=27000
+portTCP=27000
 oncetime=1# Open only once TCP connection in LEADER1
 checkAddr='0.0.0'
 count=0
 
 #IoT components ######
-IoT_SEM = ('lig')
+IoT_SEM = ('sem')
 IoT_AMB =('amb')
 IoT_BOM = ('bom')
 IoT_CAR = ('cam','sens')
@@ -50,7 +50,7 @@ _type = None
 _BcastIP = None
 _nodeID = None
 IoT = None
-_port = 10600
+portUDP = 10600
 thread_module = None
 upt_lock=threading.Lock()
 
@@ -80,30 +80,28 @@ def th_module():
         print("running as a LEADER \n")
         node_info['leaderIP']=node_info['myIP']
         #addNetworkAddress('LEADER', myIP)
-        run = threading.Thread(name="Transmitt running as a LEADER", target=transmitter, args=(node_info,), daemon=True)
+        socketTCP=CreateSocketTCP()
+        run = threading.Thread(name="Transmitt running as a LEADER", target=transmitterUDP, args=(node_info,), daemon=True)
         run.start()
         run.join()
 
-        run = threading.Thread(name="receiv running as a LEADER", target=receiver,
-                               daemon=True)
+        run = threading.Thread(name="receiv running as a LEADER", target=attentRequestTCP,args=(socketTCP,),daemon=True)
         run.start()
         # Thread to select/connect with a AGENT as a LEADER
-
-
-        # createChanel2DP()
-        # sendIP2DP()
 
         #### refresh IP LEADER
 
         fresh = threading.Thread(name="refresh", target=refresh,
-                                 daemon=True)
+                               daemon=True)
         fresh.start()
     else:
         print("running as a AGENT \n")
-        run = threading.Thread(name="receiv running as a AGENT", target=receiver,
+        run = threading.Thread(name="receiv BroadCast as a AGENT", target=receiverUDP,
                                daemon=True)
         run.start()
 
+        #run = threading.Thread(name="SendInfoNode as a AGENT", target=SendInfoNode, daemon=True)
+        #run.start()
     ####Send role to DataPlane
 
     #comunicateRole2DP(_role)
@@ -203,11 +201,12 @@ def refresh ():
     while True:
         print('** sending status refresh as:',node_info['role'])
         sleep(10)
-        transmitter(node_info)
+        transmitterUDP(node_info)
 
 
-def transmitter(node_info):
+def transmitterUDP(node_info):
     global start_setuptime,sock
+    print('Thread:', threading.current_thread().getName(), 'with identifier:', threading.current_thread().ident)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
@@ -217,41 +216,97 @@ def transmitter(node_info):
  # send device and role
     #print("sending to: network=", node_info['BcastIP'],"port=",node_info['port'])
     #sock.sendto((str(text)).encode(), (node_info['BcastIP'], node_info['port']))
-    sock.sendto((str(node_info)).encode(), (node_info['BcastIP'], node_info['port']))
+    sock.sendto((str(node_info)).encode(), (node_info['BcastIP'], node_info['portUDP']))
     sock.close()
 
+# Create socket TCP
+def CreateSocketTCP():
 
-def receiver():
+    global node_info
+    print("Open TCP connection in LEADER ")
+    try:
+        # Create socket and listen
+        LEADER_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # listening
+            # the SO_REUSEADDR flag tells the kernel to reuse a local socket in TIME_WAIT state,
+            # without waiting for its natural timeout to expire
+        LEADER_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+             # Specify the welcoming port to receive
+        LEADER_socket.bind(('', node_info['portTCP']))
+        print('OK Connection created.')
+        LEADER_socket.listen(1)
+        return LEADER_socket
+    except Exception as ex:
+        print('Unable to open connection')
+        print(ex)
+
+def attentRequestTCP(LEADER_socket):
+    print('Thread:', threading.current_thread().getName(), 'with identifier:', threading.current_thread().ident)
+    while True:
+        print("waiting InfoNode...")
+        (sc,addr)=LEADER_socket.accept()
+        t = threading.Thread(name="Reception info Node", target=RecvInfoNode, args=(sc,), daemon=True)
+        t.start()
+def CreateSocketTCPinNode():
+# Connect to LEADER
+    global node_info
+    AGENT_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    AGENT_socket.connect((node_info['leaderIP'],node_info['portTCP']))
+    return AGENT_socket
+
+def SendInfoNode(socketTCP,node_info):
+    print('Thread:', threading.current_thread().getName(), 'with identifier:', threading.current_thread().ident)
+    socketTCP.send(str(node_info).encode())
+    socketTCP.close()
+
+def SendLEADER2BCKAGENT(socketTCP, node_info):
+    data=str(node_info).encode()
+
+    print("send to backAGENT from leader:",data)
+    socketTCP.sendto(data,(node_info['myIP'],node_info['portTCP']))
+
+def RecvInfoNode(sc):
+    global node_info
+    while True:
+        data= (sc.recvfrom(2048))[0].decode('utf-8')
+        print("InfoNode Recived:",data,type(data))
+
+        node_info_recv=eval(data)
+        #sc.sendto('ok, info Received'.encode(), (node_info_recv['myIP'], node_info_recv['portTCP']))
+        ProccesData(sc,node_info['role'],node_info_recv)
+
+
+def receiverUDP():
     global sockrcv,ownrole,node_info
     ownrole = node_info['role']
     #identify receiver threads
     print('Thread:',threading.current_thread().getName(),'with identifier:',threading.current_thread().ident)
     sockrcv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sockrcv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sockrcv.bind((node_info['BcastIP'], int(node_info['port'])))
+    sockrcv.bind((node_info['BcastIP'], int(node_info['portUDP'])))
     print('Listening for datagrams at {}'.format(sockrcv.getsockname()))
-    while True:
-        try:
-            #receiving data and transmitter address
-            data,address=sockrcv.recvfrom(BUFSIZE)
-            # decoding and  split tupla
-            data= data.decode('ascii')
-            node_info_recv=eval(data)
-            #print(("received data:", node_info_recv))
-            #node_info['role']=data[1]
-            #node_info['device']=data[0]
-            #node_info['node_ID']=data[2]
-            node_info['BcastIP']=node_info_recv['BcastIP']
+    #while True:
+    try:
+        #receiving data and transmitter address
+        data,address=sockrcv.recvfrom(BUFSIZE)
+        # decoding and  split tupla
+        data= data.decode('ascii')
+        node_info_recv=eval(data)
+        print(("received data:", node_info_recv))
+        #node_info['role']=data[1]
+        #node_info['device']=data[0]
+        #node_info['node_ID']=data[2]
+        node_info['BcastIP']=node_info_recv['BcastIP']
 
-            #print("device updated:",node_info, "Ownrole:", ownrole)
-            proc = threading.Thread(name= "ProcData",target=ProccesData, args=(ownrole,node_info_recv),
-                                   daemon=True)  # Once socket receives data, processing
-            proc.start()
-        except Exception as ex:
-            cp.eprint(ex)
-            break
+        #print("device updated:",node_info, "Ownrole:", ownrole)
+        proc = threading.Thread(name= "ProcData",target=ProccesData, args=(ownrole,node_info_recv),
+                               daemon=True)  # Once socket receives data, processing
+        proc.start()
+    except Exception as ex:
+        cp.eprint(ex)
+        #break
 
-def ProccesData(yourrole, node_info_recv):
+def ProccesData(socketTCP,yourrole, node_info_recv):
     ##global sockrcv  # used to close connection when AGENT is LEADER
     ###global norecvaddr  # evita que el transmitter arranque antes que el receiver tenga la IP
     global oncetime, upt_lock,count,node_info
@@ -266,6 +321,7 @@ def ProccesData(yourrole, node_info_recv):
     if node_info['role'] == 'LEADER':
 
         updt=updattingDB(node_info_recv)
+        #socketTCP.send('ok info received'.encode())
         # Updating  localDB with my @IP, @Leader(myself), IoT according Type
         #TODO: updating localDB
         #updattingLocalDB()
@@ -278,16 +334,20 @@ def ProccesData(yourrole, node_info_recv):
             if (oncetime == 1):
                 sleep(3)
                 print("conection LEADER to BKUPGENT")
-                LEADERToBKUPGENT()
+                LEADERToBKUPGENT(socketTCP)
                 oncetime = 0
 
     elif ((node_info_recv['role'] == 'BKUPGENT') and (node_info['myIP']==node_info_recv['myIP'])):
         node_info=node_info_recv
         # AGENT has been selected as a BKUPGENT
         print("selected as a BKUPGENT. LEADER Ip:", node_info_recv['leaderIP'])
+        # send agent info to leader
+        #socketTCP=CreateSocketTCPinNode()
+        #run = threading.Thread(name="transmitter info to LEADER  ", target=SendInfoNode, args=(socketTCP,node_info), daemon=True)
+        #run.start()
         #updattingDB(node_info_recv)
 
-        createSocketTCP2LEADER( )
+        #createSocketTCP2LEADER()
 
 
 
@@ -301,9 +361,18 @@ def ProccesData(yourrole, node_info_recv):
         #print('Sending id info to the LEADER:', node_info)
         # TODO: Updating  localDB with my @IP, @Leader, IoT according Type
             #updattingLocalDB(getmyIP(), address, _type)
+        # Open TCP socket
+        socketTCP=CreateSocketTCPinNode()
 
+        """run = threading.Thread(name="AGENT attent info from LEADER", target=attentRequestTCP, args=(socketTCP,),
+                               daemon=True)
+        run.start()"""
+        run = threading.Thread(name="AGENT attent info from LEADER", target=RecvInfoNode, args=(socketTCP,),
+                               daemon=True)
+        run.start()
         # send agent info to leader
-        run = threading.Thread(name="transmitter AGENT",target=transmitter,args=(node_info,), daemon=True)
+
+        run = threading.Thread(name=" AGENT sends info to LEADER",target=SendInfoNode,args=(socketTCP,node_info), daemon=True)
         run.start()
         count=0
         """else:
@@ -348,7 +417,7 @@ def createSocketTCP2BKUPGENT():
             # without waiting for its natural timeout to expire
         LEADER_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
              # Specify the welcoming port to receive
-        LEADER_socket.bind(('', porTCP))
+        LEADER_socket.bind(('', portTCP))
         print('OK Connection created.')
         LEADER_socket.listen(1)
 
@@ -372,7 +441,7 @@ def createSocketTCP2LEADER():
         try:
             # Connect and send keepalive
             BKUPGENT_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            BKUPGENT_socket.connect((node_info['leaderIP'],porTCP))
+            BKUPGENT_socket.connect((node_info['leaderIP'],portTCP))
             print("KeepAlive to the LEADER IP:", node_info['leaderIP'])
         except Exception as ex:
             print('Unable to connect to the LEADER')
@@ -397,11 +466,13 @@ def createSocketTCP2LEADER():
             updattingDB(node_info)
 
             #comunicateRole('LEADER')
-            run = threading.Thread(name="Send LEADER info",target=transmitter(node_info,), daemon=True)
+            socketTCP=CreateSocketTCP()
+            run = threading.Thread(name="Transmitt running as a newLEADER", target=transmitterUDP, args=(node_info,),
+                                   daemon=True)
             run.start()
-            #run.join()
+            run.join()
             print("Receive as new LEADER")
-            run = threading.Thread(name="receivernewLEADER",target=receiver, daemon=True)
+            run = threading.Thread(name="receiv running as a LEADER", target=attentRequestTCP,args=(socketTCP,), daemon=True)
             run.start()
             #### refresh IP LEADER
 
@@ -414,24 +485,24 @@ def createSocketTCP2LEADER():
             # Close the connection
            BKUPGENT_socket.close()
 
-def LEADERToBKUPGENT():
+def LEADERToBKUPGENT(socketTCP):
     global ipBKUPGENT,node_info
     # select BKUPGENT. Avoid select itself as BKUPGENT
     node_info_back = selectBKUPGENT()
     while (node_info['myIP']==node_info_back['myIP']):
         node_info_back= selectBKUPGENT()
     node_info_back['role']='BKUPGENT'
-    node_info_back['port']=int(node_info['port'])
+    node_info_back['portTCP']=int(node_info['portTCP'])
     print("BKUPGENT:", node_info_back)
     #update globalDB
     updattingDB(node_info_back)
     #send flag to notify to AGENT that it is a BKUPGENT
-    run = threading.Thread(name="send flag 2AGENTasBKUPGENT",target=transmitter, args=(node_info_back,), daemon=True)
+    run = threading.Thread(name="send flag 2AGENTasBKUPGENT",target=SendLEADER2BCKAGENT, args=(socketTCP,node_info_back), daemon=True)
     run.start()
     run.join()
     # Create socket TCP to BKUPGENT args=(ipBKUPGENT,porTCP)
-    run = threading.Thread(name="Create socket TCP to BKUPGENT",target=createSocketTCP2BKUPGENT, daemon=True)
-    run.start()
+    #run = threading.Thread(name="Create socket TCP to BKUPGENT",target=createSocketTCP2BKUPGENT, daemon=True)
+    #run.start()
 
 
 
@@ -489,14 +560,16 @@ def updattingLocalDB():
 ###############################################
 #TODO: possible remove setup
 def setup(n_info, ip_cbk=None, role_cbk=None, verbose=False):
-    global _role, _type, _BcastIP,_port, _nodeID, __setup_done__, cp, _ip_cbk, _role_cbk, node_info
+    global _role, _type, _BcastIP,_portUDP,portTCP, _nodeID, __setup_done__, cp, _ip_cbk, _role_cbk, node_info
     node_info=n_info
     _role = node_info['role']
     _type = node_info['device']
     _BcastIP = node_info['BcastIP']
     _nodeID = node_info['node_ID']
-    if node_info['port'] =='None':
-       node_info['port']=_port
+    if node_info['portUDP'] =='None':
+       node_info['portUDP']=portUDP
+    if node_info['portTCP'] =='None':
+       node_info['portTCP']=portTCP
     _ip_cbk = ip_cbk
     _role_cbk = role_cbk
     cp = custom_print(verbose,_tag)

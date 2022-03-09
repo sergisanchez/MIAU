@@ -53,7 +53,7 @@ def sendTo(addr_dest, msg='', proto='TCP', reply=False, replyCallback=None):
             if not type(addr_t[0]) is str or not type(addr_t[1]) is int:
                 print(str(addr_t) + ' it\'s not a valid address')
                 return
-            elif addr_t[0] is '':
+            elif addr_t[0] == '':
                 return
         except:
             return
